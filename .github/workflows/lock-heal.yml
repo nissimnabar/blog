@@ -1,0 +1,102 @@
+name: Heal lock & verify ci
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node (pin EXACTLY what your build uses)
+        uses: actions/setup-node@v4
+        with:
+          # If you have .nvmrc, use:
+          # node-version-file: '.nvmrc'
+          node-version: '20.14.0'
+          cache: 'npm'
+
+      - name: Show tool versions
+        run: |
+          node -v
+          npm -v
+
+      - name: Detect workspaces & overrides
+        run: |
+          echo "workspaces:"
+          node -e "try{console.log(JSON.stringify(require('./package.json').workspaces||null,null,2))}catch(e){console.log('none')}"
+          echo "overrides:"
+          node -e "try{console.log(JSON.stringify(require('./package.json').overrides||null,null,2))}catch(e){console.log('none')}"
+
+      - name: Print current lockfileVersion (if exists)
+        run: |
+          if [ -f package-lock.json ]; then
+            node -e "const f=require('./package-lock.json'); console.log('lockfileVersion:', f.lockfileVersion)"
+          else
+            echo "No package-lock.json"
+          fi
+
+      # 1) Try minimal lock-only refresh (workspace-aware)
+      - name: Attempt lock-only refresh
+        run: |
+          if node -e "process.exit(+(!!(require('./package.json').workspaces)))"; then
+            echo "Workspaces detected -> using -ws"
+            npm install --package-lock-only -ws
+          else
+            echo "No workspaces"
+            npm install --package-lock-only
+          fi
+
+      - name: Print who wants picomatch
+        run: |
+          npm ls picomatch || true
+
+      - name: Validate with ci --dry-run
+        id: dryrun
+        continue-on-error: true
+        run: npm ci --dry-run
+
+      # 2) If still failing, NUKE lock and do a fresh resolve (workspace-aware)
+      - name: Fresh resolve fallback (nuke lock)
+        if: steps.dryrun.outcome == 'failure'
+        run: |
+          rm -f package-lock.json
+          rm -rf node_modules
+          if node -e "process.exit(+(!!(require('./package.json').workspaces)))"; then
+            npm install -ws
+          else
+            npm install
+          fi
+          echo "Fresh resolve lockfileVersion:"
+          node -e "const f=require('./package-lock.json'); console.log('lockfileVersion:', f.lockfileVersion)"
+          echo "Picomatch tree after fresh resolve:"
+          npm ls picomatch || true
+          echo "Re-validate:"
+          npm ci --dry-run
+
+      - name: Commit lockfile changes (new branch)
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: heal package-lock.json (workspace-aware)"
+          file_pattern: package-lock.json
+          branch: lockfile/heal
+          create_branch: true
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: lockfile/heal
+          title: "Heal package-lock.json"
+          body: |
+            - Regenerated lockfile with workspace awareness
+            - Ensured Node/npm match build
+            - Validated with `npm ci --dry-run`
+          base: ${{ github.ref_name }}

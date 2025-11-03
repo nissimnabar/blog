@@ -1,93 +1,66 @@
-name: Heal lockfile & verify
+name: Build and Heal Lockfile
 
 on:
-  workflow_dispatch: {}
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  heal:
+  build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # Pin EXACT toolchain (match your build job!)
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          # Prefer this if you have .nvmrc in repo:
-          # node-version-file: '.nvmrc'
-          node-version: '20.14.0'
+          node-version: '20'
           cache: 'npm'
 
-      - name: Show Node/npm versions
-        run: |
-          node -v
-          npm -v
-
-      - name: Show workspaces/overrides & check for stray locks
-        run: |
-          echo "workspaces:"
-          node -e "try{console.log(JSON.stringify(require('./package.json').workspaces||null,null,2))}catch(e){console.log('none')}"
-          echo "overrides:"
-          node -e "try{console.log(JSON.stringify(require('./package.json').overrides||null,null,2))}catch(e){console.log('none')}"
-          echo "stray lockfiles:"
-          git ls-files | egrep '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$' || true
-
-      - name: Minimal lock-only refresh (workspace aware)
-        id: lockonly
+      # -----------------------------------------------------------
+      # STEP 1: Try a clean, reproducible install (npm ci)
+      # -----------------------------------------------------------
+      - name: Install dependencies with npm ci
+        id: install
         continue-on-error: true
+        run: npm ci
+
+      # -----------------------------------------------------------
+      # STEP 2: If lock mismatch error occurs, rebuild the lockfile
+      # -----------------------------------------------------------
+      - name: Heal lockfile if npm ci failed
+        if: steps.install.outcome == 'failure'
         run: |
-          if node -e "process.exit(+(!!(require('./package.json').workspaces)))"; then
-            npm install --package-lock-only -ws
-          else
-            npm install --package-lock-only
-          fi
+          echo "Lockfile mismatch detected — rebuilding..."
+          rm -rf node_modules package-lock.json
+          npm install
+          echo "✅ Lockfile regenerated successfully."
 
-      - name: Who requires picomatch (after lock-only)
-        run: npm ls picomatch --all || true
-
-      - name: Validate with npm ci --dry-run
-        id: dryrun
-        continue-on-error: true
+      # -----------------------------------------------------------
+      # STEP 3: Re-run npm ci to verify integrity
+      # -----------------------------------------------------------
+      - name: Verify install reproducibility
         run: npm ci --dry-run
 
-      # Fallback: nuke lock & node_modules, do a FULL re-resolve
-      - name: Full re-resolve (if dry-run failed)
-        if: steps.dryrun.outcome == 'failure'
-        run: |
-          rm -f package-lock.json
-          rm -rf node_modules
-          if node -e "process.exit(+(!!(require('./package.json').workspaces)))"; then
-            npm install -ws
-          else
-            npm install
-          fi
-          echo "Post full resolve lockfileVersion:"
-          node -e "const f=require('./package-lock.json'); console.log('lockfileVersion:', f.lockfileVersion)"
-          echo "Picomatch tree after full resolve:"
-          npm ls picomatch --all || true
-          echo "Re-validate:"
-          npm ci --dry-run
-
-      - name: Commit regenerated lockfile
+      # -----------------------------------------------------------
+      # STEP 4: (Optional) Commit the healed lockfile if it changed
+      # -----------------------------------------------------------
+      - name: Commit healed lockfile
+        if: steps.install.outcome == 'failure'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: heal package-lock.json (workspace-aware, Node pinned)"
+          commit_message: "chore: regenerate package-lock.json to fix picomatch conflict"
           file_pattern: package-lock.json
-          branch: lockfile/heal
-          create_branch: true
 
-      - name: Open PR
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: lockfile/heal
-          title: "Heal package-lock.json"
-          body: |
-            - Regenerated lockfile (workspace-aware)
-            - Pinned Node/npm to match build
-            - Validated with `npm ci --dry-run`
-          base: ${{ github.ref_name }}
+      # -----------------------------------------------------------
+      # STEP 5: Build the project
+      # -----------------------------------------------------------
+      - name: Build project
+        run: npm run build

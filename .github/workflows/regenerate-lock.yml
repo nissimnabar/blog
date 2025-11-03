@@ -1,0 +1,42 @@
+name: Regenerate lockfile
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'   # or set node-version: '20'
+          cache: 'npm'
+
+      - name: Update lockfile only (no install of node_modules)
+        run: npm install --package-lock-only
+
+      - name: Commit lockfile
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: regenerate package-lock.json to sync with package.json"
+          file_pattern: package-lock.json
+          branch: lockfile/sync
+          create_branch: true
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: lockfile/sync
+          title: "Regenerate package-lock.json"
+          body: "Regenerated lock to match package.json so `npm ci` can pass."
+          base: ${{ github.ref_name }}

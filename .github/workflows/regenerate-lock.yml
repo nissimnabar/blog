@@ -1,5 +1,4 @@
 name: Regenerate lockfile
-
 on:
   workflow_dispatch: {}
 
@@ -11,32 +10,29 @@ jobs:
   lockfile:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      # Keep Node/npm consistent with your build job
+      - uses: actions/setup-node@v4
         with:
-          node-version-file: '.nvmrc'   # or set node-version: '20'
+          node-version: '20'        # or match your project (.nvmrc)
           cache: 'npm'
 
-      - name: Update lockfile only (no install of node_modules)
+      # Update only the lock; do NOT install node_modules
+      - name: Update lockfile
         run: npm install --package-lock-only
 
-      - name: Commit lockfile
-        uses: stefanzweifel/git-auto-commit-action@v5
+      # Commit the regenerated lock on a new branch
+      - uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: regenerate package-lock.json to sync with package.json"
+          commit_message: "chore: regenerate package-lock.json (sync with package.json)"
           file_pattern: package-lock.json
           branch: lockfile/sync
           create_branch: true
 
-      - name: Open PR
-        uses: peter-evans/create-pull-request@v6
+      - uses: peter-evans/create-pull-request@v6
         with:
           branch: lockfile/sync
           title: "Regenerate package-lock.json"
-          body: "Regenerated lock to match package.json so `npm ci` can pass."
-          base: ${{ github.ref_name }}
+          body: "Updates lock to satisfy package.json (e.g., picomatch@4.0.3)."
